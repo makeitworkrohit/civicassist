@@ -4,6 +4,9 @@ import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
 import { Microphone, Stop, ArrowRight, CheckCircle, XCircle } from '@phosphor-icons/react';
 import { toast } from 'sonner';
+import ComplaintDraft from '../components/ComplaintDraft';
+import DocumentHelper from '../components/DocumentHelper';
+import LocalHelpSection from '../components/LocalHelpSection';
 
 const ComplaintPage = () => {
   const { user, token } = useAuth();
@@ -13,7 +16,10 @@ const ComplaintPage = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [simplified, setSimplified] = useState('');
   const [category, setCategory] = useState('');
+  const [draftSubject, setDraftSubject] = useState('');
+  const [draftDescription, setDraftDescription] = useState('');
   const [portal, setPortal] = useState(null);
+  const [complaintId, setComplaintId] = useState(null);
   const [loading, setLoading] = useState(false);
   const [mediaRecorder, setMediaRecorder] = useState(null);
 
@@ -97,6 +103,8 @@ const ComplaintPage = () => {
 
       setSimplified(response.data.simplified);
       setCategory(response.data.category);
+      setDraftSubject(response.data.subject);
+      setDraftDescription(response.data.description);
       setStep(2);
     } catch (error) {
       toast.error('AI processing failed');
@@ -110,6 +118,8 @@ const ComplaintPage = () => {
       setStep(1);
       setSimplified('');
       setCategory('');
+      setDraftSubject('');
+      setDraftDescription('');
       return;
     }
 
@@ -123,17 +133,20 @@ const ComplaintPage = () => {
 
       setPortal(portalResponse.data);
 
-      await axios.post(
+      const submitResponse = await axios.post(
         `${API}/complaint/submit`,
         {
           original_input: inputText,
           simplified_input: simplified,
           category,
-          confirmed: true
+          confirmed: true,
+          draft_subject: draftSubject,
+          draft_description: draftDescription
         },
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
+      setComplaintId(submitResponse.data.id);
       setStep(3);
       toast.success('Complaint processed successfully!');
     } catch (error) {
@@ -145,7 +158,7 @@ const ComplaintPage = () => {
 
   return (
     <div className="min-h-screen bg-[#F4F4F5] py-12">
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="mb-8">
           <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold tracking-tight mb-2" data-testid="complaint-page-title">
             File Your Complaint
@@ -219,41 +232,54 @@ const ComplaintPage = () => {
         )}
 
         {step === 2 && (
-          <div className="bg-white border border-[#E4E4E7] p-8" data-testid="complaint-step-2">
-            <h2 className="text-xl sm:text-2xl font-bold tracking-tight mb-6">Is this your concern?</h2>
-            
-            <div className="border-l-4 border-[#002FA7] bg-[#F4F4F5] p-6 mb-6">
-              <div className="text-xs font-bold uppercase tracking-[0.2em] text-[#52525B] mb-2">Simplified Complaint</div>
-              <p className="text-base text-[#09090B] leading-relaxed mb-4" data-testid="simplified-complaint">{simplified}</p>
-              <div className="text-xs font-bold uppercase tracking-[0.2em] text-[#52525B] mb-1">Category</div>
-              <p className="font-mono text-sm text-[#002FA7]" data-testid="complaint-category">{category}</p>
+          <div className="space-y-6" data-testid="complaint-step-2">
+            {/* AI Confirmation */}
+            <div className="bg-white border border-[#E4E4E7] p-8">
+              <h2 className="text-xl sm:text-2xl font-bold tracking-tight mb-6">Is this your concern?</h2>
+              
+              <div className="border-l-4 border-[#002FA7] bg-[#F4F4F5] p-6 mb-6">
+                <div className="text-xs font-bold uppercase tracking-[0.2em] text-[#52525B] mb-2">Simplified Complaint</div>
+                <p className="text-base text-[#09090B] leading-relaxed mb-4" data-testid="simplified-complaint">{simplified}</p>
+                <div className="text-xs font-bold uppercase tracking-[0.2em] text-[#52525B] mb-1">Category</div>
+                <p className="font-mono text-sm text-[#002FA7]" data-testid="complaint-category">{category}</p>
+              </div>
+
+              <div className="flex gap-4">
+                <button
+                  onClick={() => handleConfirm(true)}
+                  data-testid="confirm-yes-button"
+                  disabled={loading}
+                  className="flex-1 bg-[#002FA7] text-white font-bold uppercase tracking-wide rounded-none border border-transparent hover:bg-[#002280] transition-colors px-6 py-3 flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  <CheckCircle size={20} weight="bold" />
+                  Yes, Proceed
+                </button>
+                <button
+                  onClick={() => handleConfirm(false)}
+                  data-testid="confirm-no-button"
+                  disabled={loading}
+                  className="flex-1 bg-transparent text-[#09090B] border border-[#09090B] font-bold uppercase tracking-wide rounded-none hover:bg-[#09090B] hover:text-white transition-colors px-6 py-3 flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  <XCircle size={20} weight="bold" />
+                  No, Re-enter
+                </button>
+              </div>
             </div>
 
-            <div className="flex gap-4">
-              <button
-                onClick={() => handleConfirm(true)}
-                data-testid="confirm-yes-button"
-                disabled={loading}
-                className="flex-1 bg-[#002FA7] text-white font-bold uppercase tracking-wide rounded-none border border-transparent hover:bg-[#002280] transition-colors px-6 py-3 flex items-center justify-center gap-2 disabled:opacity-50"
-              >
-                <CheckCircle size={20} weight="bold" />
-                Yes, Proceed
-              </button>
-              <button
-                onClick={() => handleConfirm(false)}
-                data-testid="confirm-no-button"
-                disabled={loading}
-                className="flex-1 bg-transparent text-[#09090B] border border-[#09090B] font-bold uppercase tracking-wide rounded-none hover:bg-[#09090B] hover:text-white transition-colors px-6 py-3 flex items-center justify-center gap-2 disabled:opacity-50"
-              >
-                <XCircle size={20} weight="bold" />
-                No, Re-enter
-              </button>
-            </div>
+            {/* Complaint Draft */}
+            <ComplaintDraft
+              subject={draftSubject}
+              description={draftDescription}
+              category={category}
+              userName={user.name}
+              location={`${user.city}, ${user.state} - ${user.pincode || ''}`}
+            />
           </div>
         )}
 
         {step === 3 && portal && (
           <div className="space-y-6" data-testid="complaint-step-3">
+            {/* Portal Suggestion */}
             <div className="bg-white border border-[#E4E4E7] p-8">
               <div className="text-xs font-bold uppercase tracking-[0.2em] text-[#52525B] mb-2">Recommended Portal</div>
               <h2 className="text-xl sm:text-2xl font-bold tracking-tight mb-4" data-testid="portal-name">{portal.name}</h2>
@@ -270,6 +296,13 @@ const ComplaintPage = () => {
               </a>
             </div>
 
+            {/* Document Helper */}
+            <DocumentHelper category={category} complaintId={complaintId} />
+
+            {/* Local Help Section */}
+            <LocalHelpSection state={user.state} city={user.city} category={category} />
+
+            {/* Step-by-Step Guidance */}
             {portal.guidance_steps && portal.guidance_steps.length > 0 && (
               <div className="bg-white border border-[#E4E4E7] p-8">
                 <h3 className="text-xl font-bold tracking-tight mb-6">Step-by-Step Guidance</h3>
@@ -292,7 +325,10 @@ const ComplaintPage = () => {
                 setInputText('');
                 setSimplified('');
                 setCategory('');
+                setDraftSubject('');
+                setDraftDescription('');
                 setPortal(null);
+                setComplaintId(null);
               }}
               data-testid="file-another-complaint-button"
               className="w-full bg-transparent text-[#09090B] border border-[#09090B] font-bold uppercase tracking-wide rounded-none hover:bg-[#09090B] hover:text-white transition-colors px-6 py-3"

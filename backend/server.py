@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -92,11 +92,21 @@ class ComplaintSubmit(BaseModel):
     simplified_input: str
     category: str
     confirmed: bool
+    draft_subject: Optional[str] = None
+    draft_description: Optional[str] = None
 
 class ContactMessage(BaseModel):
     name: str
     email: EmailStr
     message: str
+
+class DocumentSuggestRequest(BaseModel):
+    category: str
+
+class LocalHelpRequest(BaseModel):
+    state: str
+    city: str
+    category: str
 
 class Portal(BaseModel):
     name: str
@@ -203,10 +213,10 @@ async def simplify_complaint(request: SimplifyRequest, user: dict = Depends(get_
         chat = LlmChat(
             api_key=EMERGENT_LLM_KEY,
             session_id=f"simplify-{user['id']}-{uuid.uuid4()}",
-            system_message="You are a complaint processing assistant. Simplify user complaints into clear, concise statements and classify them into categories like: Water Supply, Electricity, Road Maintenance, Waste Management, Public Transport, Healthcare, Education, Police, Revenue, Consumer Rights, or Other. Return ONLY a valid JSON object with 'simplified' and 'category' keys, without any markdown formatting or code blocks."
+            system_message="You are a complaint processing assistant. Simplify user complaints into clear, concise statements and classify them into categories like: Water Supply, Electricity, Road Maintenance, Waste Management, Public Transport, Healthcare, Education, Police, Revenue, Consumer Rights, or Other. Also generate a formal government-ready complaint with a subject line and detailed description. Return ONLY a valid JSON object with these keys: 'simplified' (brief summary), 'category' (complaint type), 'subject' (formal subject line for government portal), 'description' (formal detailed complaint description ready for submission). Do not use markdown formatting or code blocks."
         ).with_model("openai", "gpt-4o")
         
-        user_message = UserMessage(text=f"Simplify this complaint and categorize it: {request.text}")
+        user_message = UserMessage(text=f"Simplify this complaint, categorize it, and create a formal government-ready complaint draft with subject and description: {request.text}")
         response = await chat.send_message(user_message)
         
         import json
@@ -214,8 +224,6 @@ async def simplify_complaint(request: SimplifyRequest, user: dict = Depends(get_
         
         # Clean the response - remove markdown code blocks if present
         cleaned_response = response.strip()
-        
-        # Remove ```json and ``` markers
         cleaned_response = re.sub(r'^```json\s*', '', cleaned_response)
         cleaned_response = re.sub(r'^```\s*', '', cleaned_response)
         cleaned_response = re.sub(r'\s*```$', '', cleaned_response)
@@ -223,19 +231,29 @@ async def simplify_complaint(request: SimplifyRequest, user: dict = Depends(get_
         
         try:
             result = json.loads(cleaned_response)
-            # Ensure both keys exist
-            if 'simplified' in result and 'category' in result:
+            # Ensure required keys exist
+            if all(k in result for k in ['simplified', 'category', 'subject', 'description']):
                 return {
                     "simplified": result['simplified'],
-                    "category": result['category']
+                    "category": result['category'],
+                    "subject": result['subject'],
+                    "description": result['description']
                 }
             else:
-                raise ValueError("Missing required keys")
+                # Fallback if AI doesn't return all fields
+                return {
+                    "simplified": result.get('simplified', request.text),
+                    "category": result.get('category', 'General Complaint'),
+                    "subject": result.get('subject', f"Complaint regarding {result.get('category', 'General Issue')}"),
+                    "description": result.get('description', request.text)
+                }
         except:
-            # If JSON parsing fails, try to extract information from plain text
+            # If JSON parsing fails completely
             return {
                 "simplified": request.text,
-                "category": "General Complaint"
+                "category": "General Complaint",
+                "subject": "Complaint regarding General Issue",
+                "description": request.text
             }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI processing failed: {str(e)}")
@@ -260,12 +278,257 @@ async def submit_complaint(complaint_data: ComplaintSubmit, user: dict = Depends
     doc['timestamp'] = doc['timestamp'].isoformat()
     await db.complaints.insert_one(doc)
     
+    # Save complaint draft if provided
+    if complaint_data.draft_subject and complaint_data.draft_description:
+        draft_doc = {
+            "id": str(uuid.uuid4()),
+            "complaint_id": complaint.id,
+            "user_id": user['id'],
+            "subject": complaint_data.draft_subject,
+            "description": complaint_data.draft_description,
+            "category": complaint_data.category,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.complaint_drafts.insert_one(draft_doc)
+    
     return {"id": complaint.id, "message": "Complaint submitted successfully"}
 
 @api_router.get("/complaint/history")
 async def get_complaint_history(user: dict = Depends(get_current_user)):
     complaints = await db.complaints.find({"user_id": user['id']}, {"_id": 0}).sort("timestamp", -1).to_list(100)
     return complaints
+
+@api_router.post("/documents/suggest")
+async def suggest_documents(request: DocumentSuggestRequest, user: dict = Depends(get_current_user)):
+    # Document suggestions based on category
+    document_map = {
+        "Electricity": [
+            {"name": "Electricity Bill Copy", "required": True, "description": "Latest electricity bill showing account details"},
+            {"name": "Identity Proof", "required": False, "description": "Aadhaar Card, PAN Card, or Voter ID"},
+            {"name": "Photographs", "required": False, "description": "Photos of the issue (if applicable)"}
+        ],
+        "Water Supply": [
+            {"name": "Water Bill Copy", "required": True, "description": "Latest water bill or connection proof"},
+            {"name": "Address Proof", "required": True, "description": "Ration card, electricity bill, or rental agreement"},
+            {"name": "Photographs", "required": False, "description": "Photos showing the water issue"}
+        ],
+        "Road Maintenance": [
+            {"name": "Photographs", "required": True, "description": "Clear photos of potholes or road damage"},
+            {"name": "Location Proof", "required": False, "description": "Google Maps screenshot or address"},
+            {"name": "Identity Proof", "required": False, "description": "Any government ID"}
+        ],
+        "Consumer Rights": [
+            {"name": "Purchase Invoice/Bill", "required": True, "description": "Original bill or receipt of purchase"},
+            {"name": "Product Details", "required": True, "description": "Product photos, serial number, warranty card"},
+            {"name": "Communication Records", "required": False, "description": "Emails, SMS, or call recordings with seller"}
+        ],
+        "Healthcare": [
+            {"name": "Medical Records", "required": True, "description": "Prescriptions, test reports, treatment records"},
+            {"name": "Hospital Bills", "required": True, "description": "Bills and payment receipts"},
+            {"name": "Identity Proof", "required": True, "description": "Aadhaar Card or any government ID"}
+        ],
+        "Education": [
+            {"name": "Admission Proof", "required": True, "description": "Admission receipt, student ID, or enrollment certificate"},
+            {"name": "Fee Receipts", "required": False, "description": "Tuition fee payment receipts"},
+            {"name": "Identity Proof", "required": True, "description": "Student ID or Aadhaar Card"}
+        ]
+    }
+    
+    # Default documents for general complaints
+    default_docs = [
+        {"name": "Identity Proof", "required": True, "description": "Aadhaar Card, PAN Card, Voter ID, or Passport"},
+        {"name": "Address Proof", "required": False, "description": "Ration card, utility bill, or rental agreement"},
+        {"name": "Supporting Evidence", "required": False, "description": "Photos, videos, or any relevant documents"}
+    ]
+    
+    documents = document_map.get(request.category, default_docs)
+    return {"category": request.category, "documents": documents}
+
+@api_router.post("/documents/upload")
+async def upload_document(
+    file: UploadFile = File(...),
+    complaint_id: str = Form(...),
+    user: dict = Depends(get_current_user)
+):
+    # Validate file type
+    allowed_types = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg']
+    if file.content_type not in allowed_types:
+        raise HTTPException(status_code=400, detail="Only PDF, JPG, and PNG files are allowed")
+    
+    # Validate file size (max 5MB)
+    file_content = await file.read()
+    if len(file_content) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File size must be less than 5MB")
+    
+    # In production, upload to S3 or cloud storage
+    # For now, we'll store file info in database (mock file_url)
+    file_id = str(uuid.uuid4())
+    file_url = f"/uploads/{user['id']}/{complaint_id}/{file_id}_{file.filename}"
+    
+    doc = {
+        "id": file_id,
+        "user_id": user['id'],
+        "complaint_id": complaint_id,
+        "file_name": file.filename,
+        "file_url": file_url,
+        "file_type": file.content_type,
+        "file_size": len(file_content),
+        "uploaded_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.documents.insert_one(doc)
+    
+    return {
+        "id": file_id,
+        "file_name": file.filename,
+        "file_url": file_url,
+        "message": "Document uploaded successfully"
+    }
+
+@api_router.get("/documents/{complaint_id}")
+async def get_documents(complaint_id: str, user: dict = Depends(get_current_user)):
+    documents = await db.documents.find(
+        {"complaint_id": complaint_id, "user_id": user['id']},
+        {"_id": 0}
+    ).to_list(100)
+    return documents
+
+@api_router.post("/locations/local-help")
+async def get_local_help(request: LocalHelpRequest, user: dict = Depends(get_current_user)):
+    # Local authority data (can be expanded with real data)
+    local_authorities = {
+        "Maharashtra": {
+            "Mumbai": {
+                "contacts": [
+                    {
+                        "office": "Mumbai Municipal Corporation - Complaint Cell",
+                        "phone": "022-22694727",
+                        "email": "complaints.mcgm@gmail.com",
+                        "timings": "Mon-Sat, 10 AM - 6 PM"
+                    },
+                    {
+                        "office": "Maharashtra Electricity Distribution Co. Ltd. (MSEDCL)",
+                        "phone": "1912",
+                        "email": "support@mahadiscom.in",
+                        "timings": "24/7 Helpline"
+                    }
+                ],
+                "offices": [
+                    {
+                        "name": "BMC Head Office",
+                        "address": "Mahapalika Marg, Fort, Mumbai - 400001",
+                        "department": "General Administration"
+                    },
+                    {
+                        "name": "BEST Undertaking Office",
+                        "address": "BEST Bhavan, Colaba Depot, Mumbai - 400005",
+                        "department": "Electricity & Transport"
+                    }
+                ]
+            }
+        },
+        "Karnataka": {
+            "Bengaluru": {
+                "contacts": [
+                    {
+                        "office": "BBMP Complaint Cell",
+                        "phone": "080-22975000",
+                        "email": "complaints@bbmp.gov.in",
+                        "timings": "Mon-Sat, 9:30 AM - 5:30 PM"
+                    },
+                    {
+                        "office": "BESCOM Helpline",
+                        "phone": "1912",
+                        "email": "bescom@karnataka.gov.in",
+                        "timings": "24/7"
+                    }
+                ],
+                "offices": [
+                    {
+                        "name": "BBMP Head Office",
+                        "address": "N.R. Square, Bangalore - 560002",
+                        "department": "Municipal Corporation"
+                    }
+                ]
+            }
+        },
+        "Tamil Nadu": {
+            "Chennai": {
+                "contacts": [
+                    {
+                        "office": "Greater Chennai Corporation",
+                        "phone": "044-25384520",
+                        "email": "gcc@chennaicorporation.gov.in",
+                        "timings": "Mon-Fri, 9 AM - 5 PM"
+                    }
+                ],
+                "offices": [
+                    {
+                        "name": "Chennai Corporation Head Office",
+                        "address": "Ripon Building, NSC Bose Road, Chennai - 600003",
+                        "department": "Municipal Services"
+                    }
+                ]
+            }
+        },
+        "Delhi": {
+            "New Delhi": {
+                "contacts": [
+                    {
+                        "office": "NDMC Complaint Cell",
+                        "phone": "011-23321054",
+                        "email": "complaints@ndmc.gov.in",
+                        "timings": "Mon-Fri, 9 AM - 6 PM"
+                    },
+                    {
+                        "office": "BSES Yamuna/Rajdhani Helpline",
+                        "phone": "19123",
+                        "email": "customercare@bsesdelhi.com",
+                        "timings": "24/7"
+                    }
+                ],
+                "offices": [
+                    {
+                        "name": "NDMC Office",
+                        "address": "Palika Kendra, Sansad Marg, New Delhi - 110001",
+                        "department": "Municipal Services"
+                    }
+                ]
+            }
+        }
+    }
+    
+    # Get data for user's location
+    state_data = local_authorities.get(request.state, {})
+    city_data = state_data.get(request.city, {})
+    
+    # Default fallback
+    if not city_data:
+        city_data = {
+            "contacts": [
+                {
+                    "office": "State Helpline",
+                    "phone": "Use CPGRAMS portal for contact",
+                    "email": "NA",
+                    "timings": "Visit portal"
+                }
+            ],
+            "offices": [
+                {
+                    "name": "District Collector Office",
+                    "address": f"Contact local district office in {request.city}",
+                    "department": "General Administration"
+                }
+            ]
+        }
+    
+    return {
+        "state": request.state,
+        "city": request.city,
+        "contacts": city_data.get("contacts", []),
+        "offices": city_data.get("offices", []),
+        "alternate_portals": []  # Can be populated later
+    }
 
 @api_router.post("/portal/suggest")
 async def suggest_portal(request: PortalSuggestionRequest, user: dict = Depends(get_current_user)):
