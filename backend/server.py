@@ -1,72 +1,360 @@
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
+from pydantic import BaseModel, Field, ConfigDict, EmailStr
+from typing import List, Optional
 import uuid
-from datetime import datetime, timezone
-
+from datetime import datetime, timezone, timedelta
+import jwt
+import bcrypt
+from emergentintegrations.llm.chat import LlmChat, UserMessage
+from emergentintegrations.llm.openai import OpenAISpeechToText
+import io
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# MongoDB connection
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# Create the main app without a prefix
 app = FastAPI()
-
-# Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
+security = HTTPBearer()
 
+JWT_SECRET = os.getenv('JWT_SECRET', 'civic-assist-secret-key-2026')
+JWT_ALGORITHM = 'HS256'
+EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
+class User(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
+    name: str
+    email: EmailStr
+    password_hash: str
+    state: Optional[str] = None
+    city: Optional[str] = None
+    pincode: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class UserRegister(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+class UserProfile(BaseModel):
+    name: str
+    state: str
+    city: str
+    pincode: str
+
+class UserResponse(BaseModel):
+    id: str
+    name: str
+    email: str
+    state: Optional[str] = None
+    city: Optional[str] = None
+    pincode: Optional[str] = None
+
+class Complaint(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str
+    original_input: str
+    simplified_input: str
+    category: str
+    suggested_portal: Optional[dict] = None
+    state: str
+    city: str
+    pincode: str
+    confirmed: bool = False
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
+class SimplifyRequest(BaseModel):
+    text: str
 
-# Add your routes to the router instead of directly to app
+class PortalSuggestionRequest(BaseModel):
+    category: str
+    state: str
+    city: str
+
+class ComplaintSubmit(BaseModel):
+    original_input: str
+    simplified_input: str
+    category: str
+    confirmed: bool
+
+class ContactMessage(BaseModel):
+    name: str
+    email: EmailStr
+    message: str
+
+class Portal(BaseModel):
+    name: str
+    description: str
+    url: str
+    categories: List[str]
+    states: List[str]
+    guidance_steps: List[str]
+
+def create_token(user_id: str) -> str:
+    payload = {
+        'user_id': user_id,
+        'exp': datetime.now(timezone.utc) + timedelta(days=7)
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+    try:
+        token = credentials.credentials
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user = await db.users.find_one({"id": payload['user_id']}, {"_id": 0})
+        if not user:
+            raise HTTPException(status_code=401, detail="User not found")
+        return user
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
 @api_router.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"message": "Civic Assist API"}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
+@api_router.post("/auth/register")
+async def register(user_data: UserRegister):
+    existing = await db.users.find_one({"email": user_data.email}, {"_id": 0})
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
     
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
+    password_hash = bcrypt.hashpw(user_data.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    user = User(
+        name=user_data.name,
+        email=user_data.email,
+        password_hash=password_hash
+    )
+    
+    doc = user.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    await db.users.insert_one(doc)
+    
+    token = create_token(user.id)
+    return {
+        "token": token,
+        "user": UserResponse(**{k: v for k, v in user.model_dump().items() if k != 'password_hash'})
+    }
+
+@api_router.post("/auth/login")
+async def login(credentials: UserLogin):
+    user = await db.users.find_one({"email": credentials.email}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    if not bcrypt.checkpw(credentials.password.encode('utf-8'), user['password_hash'].encode('utf-8')):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    token = create_token(user['id'])
+    user_response = UserResponse(**{k: v for k, v in user.items() if k != 'password_hash'})
+    return {"token": token, "user": user_response}
+
+@api_router.get("/auth/me")
+async def get_me(user: dict = Depends(get_current_user)):
+    return UserResponse(**{k: v for k, v in user.items() if k != 'password_hash'})
+
+@api_router.put("/auth/profile")
+async def update_profile(profile: UserProfile, user: dict = Depends(get_current_user)):
+    await db.users.update_one(
+        {"id": user['id']},
+        {"$set": profile.model_dump()}
+    )
+    updated_user = await db.users.find_one({"id": user['id']}, {"_id": 0})
+    return UserResponse(**{k: v for k, v in updated_user.items() if k != 'password_hash'})
+
+@api_router.post("/complaint/transcribe")
+async def transcribe_audio(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    try:
+        audio_data = await file.read()
+        audio_file = io.BytesIO(audio_data)
+        audio_file.name = file.filename
+        
+        stt = OpenAISpeechToText(api_key=EMERGENT_LLM_KEY)
+        response = await stt.transcribe(
+            file=audio_file,
+            model="whisper-1",
+            response_format="json"
+        )
+        
+        return {"text": response.text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+
+@api_router.post("/complaint/simplify")
+async def simplify_complaint(request: SimplifyRequest, user: dict = Depends(get_current_user)):
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"simplify-{user['id']}-{uuid.uuid4()}",
+            system_message="You are a complaint processing assistant. Simplify user complaints into clear, concise statements and classify them into categories like: Water Supply, Electricity, Road Maintenance, Waste Management, Public Transport, Healthcare, Education, Police, Revenue, Consumer Rights, or Other. Return JSON with 'simplified' and 'category' keys."
+        ).with_model("openai", "gpt-4o")
+        
+        user_message = UserMessage(text=f"Simplify this complaint and categorize it: {request.text}")
+        response = await chat.send_message(user_message)
+        
+        import json
+        try:
+            result = json.loads(response)
+            return result
+        except:
+            return {
+                "simplified": response,
+                "category": "General Complaint"
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI processing failed: {str(e)}")
+
+@api_router.post("/complaint/submit")
+async def submit_complaint(complaint_data: ComplaintSubmit, user: dict = Depends(get_current_user)):
+    if not user.get('state') or not user.get('city'):
+        raise HTTPException(status_code=400, detail="Please update your profile with location details")
+    
+    complaint = Complaint(
+        user_id=user['id'],
+        original_input=complaint_data.original_input,
+        simplified_input=complaint_data.simplified_input,
+        category=complaint_data.category,
+        state=user['state'],
+        city=user['city'],
+        pincode=user.get('pincode', ''),
+        confirmed=complaint_data.confirmed
+    )
+    
+    doc = complaint.model_dump()
     doc['timestamp'] = doc['timestamp'].isoformat()
+    await db.complaints.insert_one(doc)
     
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
+    return {"id": complaint.id, "message": "Complaint submitted successfully"}
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
+@api_router.get("/complaint/history")
+async def get_complaint_history(user: dict = Depends(get_current_user)):
+    complaints = await db.complaints.find({"user_id": user['id']}, {"_id": 0}).sort("timestamp", -1).to_list(100)
+    return complaints
 
-# Include the router in the main app
+@api_router.post("/portal/suggest")
+async def suggest_portal(request: PortalSuggestionRequest, user: dict = Depends(get_current_user)):
+    # First, try to find state-specific portal matching the category
+    portal = await db.portals.find_one(
+        {
+            "categories": request.category,
+            "states": request.state
+        },
+        {"_id": 0}
+    )
+    
+    # If no state-specific portal found, try All India portals for that category
+    if not portal:
+        portal = await db.portals.find_one(
+            {
+                "categories": request.category,
+                "states": "All India"
+            },
+            {"_id": 0}
+        )
+    
+    # If still no portal found, return CPGRAMS as default
+    if not portal:
+        portal = await db.portals.find_one(
+            {
+                "name": {"$regex": "CPGRAMS", "$options": "i"}
+            },
+            {"_id": 0}
+        )
+    
+    # Final fallback
+    if not portal:
+        portal = {
+            "name": "CPGRAMS - Centralized Public Grievance Redress System",
+            "description": "National portal for lodging grievances to Government departments",
+            "url": "https://pgportal.gov.in/",
+            "guidance_steps": [
+                "Visit the CPGRAMS portal",
+                "Click on 'Lodge Public Grievance'",
+                "Register or login to your account",
+                "Fill in the grievance details",
+                "Upload supporting documents if any",
+                "Submit and note your registration number"
+            ]
+        }
+    
+    return portal
+
+@api_router.post("/contact")
+async def submit_contact(message: ContactMessage):
+    doc = message.model_dump()
+    doc['id'] = str(uuid.uuid4())
+    doc['timestamp'] = datetime.now(timezone.utc).isoformat()
+    await db.contact_messages.insert_one(doc)
+    return {"message": "Thank you for contacting us!"}
+
+@api_router.get("/locations/states")
+async def get_states():
+    states = [
+        "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh",
+        "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jharkhand",
+        "Karnataka", "Kerala", "Madhya Pradesh", "Maharashtra", "Manipur",
+        "Meghalaya", "Mizoram", "Nagaland", "Odisha", "Punjab",
+        "Rajasthan", "Sikkim", "Tamil Nadu", "Telangana", "Tripura",
+        "Uttar Pradesh", "Uttarakhand", "West Bengal",
+        "Delhi", "Jammu and Kashmir", "Ladakh", "Puducherry"
+    ]
+    return {"states": states}
+
+@api_router.get("/locations/cities/{state}")
+async def get_cities(state: str):
+    cities_map = {
+        "Andhra Pradesh": ["Visakhapatnam", "Vijayawada", "Guntur", "Nellore", "Tirupati", "Kakinada"],
+        "Arunachal Pradesh": ["Itanagar", "Naharlagun", "Pasighat", "Tawang", "Ziro"],
+        "Assam": ["Guwahati", "Silchar", "Dibrugarh", "Jorhat", "Tezpur", "Nagaon"],
+        "Bihar": ["Patna", "Gaya", "Bhagalpur", "Muzaffarpur", "Darbhanga", "Purnia"],
+        "Chhattisgarh": ["Raipur", "Bhilai", "Bilaspur", "Korba", "Durg", "Rajnandgaon"],
+        "Goa": ["Panaji", "Margao", "Vasco da Gama", "Mapusa", "Ponda"],
+        "Gujarat": ["Ahmedabad", "Surat", "Vadodara", "Rajkot", "Bhavnagar", "Jamnagar"],
+        "Haryana": ["Chandigarh", "Faridabad", "Gurugram", "Panipat", "Ambala", "Karnal"],
+        "Himachal Pradesh": ["Shimla", "Dharamshala", "Solan", "Mandi", "Kullu", "Hamirpur"],
+        "Jharkhand": ["Ranchi", "Jamshedpur", "Dhanbad", "Bokaro", "Deoghar", "Hazaribagh"],
+        "Karnataka": ["Bengaluru", "Mysuru", "Mangaluru", "Hubballi", "Belagavi", "Shivamogga"],
+        "Kerala": ["Thiruvananthapuram", "Kochi", "Kozhikode", "Thrissur", "Kollam", "Kannur"],
+        "Madhya Pradesh": ["Bhopal", "Indore", "Gwalior", "Jabalpur", "Ujjain", "Sagar"],
+        "Maharashtra": ["Mumbai", "Pune", "Nagpur", "Nashik", "Aurangabad", "Thane", "Solapur"],
+        "Manipur": ["Imphal", "Thoubal", "Bishnupur", "Churachandpur", "Kakching"],
+        "Meghalaya": ["Shillong", "Tura", "Jowai", "Nongstoin", "Williamnagar"],
+        "Mizoram": ["Aizawl", "Lunglei", "Champhai", "Serchhip", "Kolasib"],
+        "Nagaland": ["Kohima", "Dimapur", "Mokokchung", "Tuensang", "Wokha"],
+        "Odisha": ["Bhubaneswar", "Cuttack", "Rourkela", "Brahmapur", "Sambalpur", "Puri"],
+        "Punjab": ["Chandigarh", "Ludhiana", "Amritsar", "Jalandhar", "Patiala", "Bathinda"],
+        "Rajasthan": ["Jaipur", "Jodhpur", "Udaipur", "Kota", "Ajmer", "Bikaner"],
+        "Sikkim": ["Gangtok", "Namchi", "Gyalshing", "Mangan", "Rangpo"],
+        "Tamil Nadu": ["Chennai", "Coimbatore", "Madurai", "Tiruchirappalli", "Salem", "Tirunelveli"],
+        "Telangana": ["Hyderabad", "Warangal", "Nizamabad", "Khammam", "Karimnagar", "Ramagundam"],
+        "Tripura": ["Agartala", "Udaipur", "Dharmanagar", "Kailashahar", "Ambassa"],
+        "Uttar Pradesh": ["Lucknow", "Kanpur", "Agra", "Varanasi", "Noida", "Ghaziabad", "Meerut"],
+        "Uttarakhand": ["Dehradun", "Haridwar", "Roorkee", "Haldwani", "Rudrapur", "Rishikesh"],
+        "West Bengal": ["Kolkata", "Howrah", "Durgapur", "Asansol", "Siliguri", "Bardhaman"],
+        "Delhi": ["New Delhi", "Central Delhi", "North Delhi", "South Delhi", "East Delhi", "West Delhi"],
+        "Jammu and Kashmir": ["Srinagar", "Jammu", "Anantnag", "Baramulla", "Udhampur", "Rajouri"],
+        "Ladakh": ["Leh", "Kargil", "Nubra", "Zanskar"],
+        "Puducherry": ["Puducherry", "Karaikal", "Mahe", "Yanam"]
+    }
+    return {"cities": cities_map.get(state, ["Other"])}
+
 app.include_router(api_router)
 
 app.add_middleware(
@@ -77,12 +365,325 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+@app.on_event("startup")
+async def seed_portals():
+    existing = await db.portals.find_one({})
+    if not existing:
+        portals = [
+            {
+                "name": "Maharashtra Grievance Portal (Aaple Sarkar)",
+                "description": "Official grievance portal for Maharashtra Government",
+                "url": "https://grievances.maharashtra.gov.in/",
+                "categories": ["Water Supply", "Electricity", "Road Maintenance", "Waste Management", "General Complaint"],
+                "states": ["Maharashtra"],
+                "guidance_steps": [
+                    "Visit Maharashtra Grievance Portal",
+                    "Click on 'Register Grievance'",
+                    "Login with credentials or register new account",
+                    "Select relevant department",
+                    "Fill complaint form with details",
+                    "Upload supporting documents if any",
+                    "Submit and note grievance ID for tracking"
+                ]
+            },
+            {
+                "name": "Karnataka Sakala Services",
+                "description": "Time-bound delivery of government services in Karnataka",
+                "url": "https://sakala.karnataka.gov.in/",
+                "categories": ["Water Supply", "Electricity", "Road Maintenance", "Waste Management", "General Complaint"],
+                "states": ["Karnataka"],
+                "guidance_steps": [
+                    "Visit Sakala portal",
+                    "Register or login to your account",
+                    "Select service/complaint category",
+                    "Fill application form",
+                    "Upload required documents",
+                    "Pay fees if applicable",
+                    "Track application status online"
+                ]
+            },
+            {
+                "name": "Tamil Nadu Public Grievance Redressal System",
+                "description": "Online grievance system for Tamil Nadu",
+                "url": "https://www.tnpgrs.tn.gov.in/",
+                "categories": ["Water Supply", "Electricity", "Road Maintenance", "Waste Management", "General Complaint"],
+                "states": ["Tamil Nadu"],
+                "guidance_steps": [
+                    "Visit TN Grievance portal",
+                    "Click 'Register Grievance'",
+                    "Login or create account",
+                    "Choose department and category",
+                    "Provide complaint details",
+                    "Submit with contact information",
+                    "Track status using grievance number"
+                ]
+            },
+            {
+                "name": "Delhi Jansunwai Portal",
+                "description": "Public grievance portal for Delhi Government",
+                "url": "https://jansunwai.delhi.gov.in/",
+                "categories": ["Water Supply", "Electricity", "Road Maintenance", "Waste Management", "General Complaint"],
+                "states": ["Delhi"],
+                "guidance_steps": [
+                    "Visit Delhi Jansunwai portal",
+                    "Register new complaint",
+                    "Login with mobile/email",
+                    "Select concerned department",
+                    "Enter complaint details",
+                    "Upload photos/documents",
+                    "Submit and save complaint ID"
+                ]
+            },
+            {
+                "name": "Uttar Pradesh Jansunwai Portal",
+                "description": "Grievance redressal system for UP",
+                "url": "https://jansunwai.up.nic.in/",
+                "categories": ["Water Supply", "Electricity", "Road Maintenance", "Waste Management", "General Complaint"],
+                "states": ["Uttar Pradesh"],
+                "guidance_steps": [
+                    "Visit UP Jansunwai portal",
+                    "Click on 'शिकायत दर्ज करें' (Register Complaint)",
+                    "Fill registration form",
+                    "Select department",
+                    "Provide complaint details",
+                    "Submit and note grievance number"
+                ]
+            },
+            {
+                "name": "Gujarat CM Dashboard (Samadhan Portal)",
+                "description": "Chief Minister's dashboard for public grievances",
+                "url": "https://cmosamadhan.gujarat.gov.in/",
+                "categories": ["Water Supply", "Electricity", "Road Maintenance", "Waste Management", "General Complaint"],
+                "states": ["Gujarat"],
+                "guidance_steps": [
+                    "Visit CM Samadhan portal",
+                    "Register complaint online",
+                    "Fill complaint form",
+                    "Select district and department",
+                    "Upload documents if needed",
+                    "Submit and track online"
+                ]
+            },
+            {
+                "name": "Rajasthan Sampark Portal",
+                "description": "Integrated grievance portal for Rajasthan",
+                "url": "https://sampark.rajasthan.gov.in/",
+                "categories": ["Water Supply", "Electricity", "Road Maintenance", "Waste Management", "General Complaint"],
+                "states": ["Rajasthan"],
+                "guidance_steps": [
+                    "Visit Sampark portal",
+                    "Register new grievance",
+                    "Login with credentials",
+                    "Select complaint category",
+                    "Fill details and submit",
+                    "Track using mobile number"
+                ]
+            },
+            {
+                "name": "West Bengal Grievance Portal",
+                "description": "Public grievance system for West Bengal",
+                "url": "https://wb.gov.in/grievance-redressal.aspx",
+                "categories": ["Water Supply", "Electricity", "Road Maintenance", "Waste Management", "General Complaint"],
+                "states": ["West Bengal"],
+                "guidance_steps": [
+                    "Visit WB Grievance portal",
+                    "Click 'Submit Grievance'",
+                    "Register or login",
+                    "Choose department",
+                    "Enter complaint details",
+                    "Submit with verification"
+                ]
+            },
+            {
+                "name": "Andhra Pradesh Spandana Portal",
+                "description": "Online grievance redressal for AP",
+                "url": "https://spandana.ap.gov.in/",
+                "categories": ["Water Supply", "Electricity", "Road Maintenance", "Waste Management", "General Complaint"],
+                "states": ["Andhra Pradesh"],
+                "guidance_steps": [
+                    "Visit Spandana portal",
+                    "Register grievance",
+                    "Login with mobile OTP",
+                    "Select category",
+                    "Fill complaint form",
+                    "Submit and track"
+                ]
+            },
+            {
+                "name": "Telangana CPGRAM State Portal",
+                "description": "State grievance portal for Telangana",
+                "url": "https://pgrs.telangana.gov.in/",
+                "categories": ["Water Supply", "Electricity", "Road Maintenance", "Waste Management", "General Complaint"],
+                "states": ["Telangana"],
+                "guidance_steps": [
+                    "Visit Telangana PGRS",
+                    "Register complaint",
+                    "Create account or login",
+                    "Select department",
+                    "Submit complaint details",
+                    "Track status online"
+                ]
+            },
+            {
+                "name": "Kerala CM Grievance Portal",
+                "description": "Chief Minister's grievance cell for Kerala",
+                "url": "https://cm.lsgkerala.gov.in/",
+                "categories": ["Water Supply", "Electricity", "Road Maintenance", "Waste Management", "General Complaint"],
+                "states": ["Kerala"],
+                "guidance_steps": [
+                    "Visit CM Grievance portal",
+                    "Submit new complaint",
+                    "Fill personal details",
+                    "Describe grievance",
+                    "Upload documents",
+                    "Submit and save reference number"
+                ]
+            },
+            {
+                "name": "Madhya Pradesh CM Helpline",
+                "description": "Public grievance system for MP",
+                "url": "https://cmhelpline.mp.gov.in/",
+                "categories": ["Water Supply", "Electricity", "Road Maintenance", "Waste Management", "General Complaint"],
+                "states": ["Madhya Pradesh"],
+                "guidance_steps": [
+                    "Visit CM Helpline portal",
+                    "Register complaint online",
+                    "Fill complaint form",
+                    "Select district and category",
+                    "Submit with details",
+                    "Track using complaint ID"
+                ]
+            },
+            {
+                "name": "Bihar Jansunwai Portal",
+                "description": "Public grievance portal for Bihar",
+                "url": "https://serviceonline.bihar.gov.in/",
+                "categories": ["Water Supply", "Electricity", "Road Maintenance", "Waste Management", "General Complaint"],
+                "states": ["Bihar"],
+                "guidance_steps": [
+                    "Visit Bihar Jansunwai",
+                    "Register grievance",
+                    "Login to portal",
+                    "Select service/complaint",
+                    "Fill required details",
+                    "Submit and track"
+                ]
+            },
+            {
+                "name": "Punjab Governance Reforms",
+                "description": "Grievance system for Punjab",
+                "url": "https://pgrs.punjab.gov.in/",
+                "categories": ["Water Supply", "Electricity", "Road Maintenance", "Waste Management", "General Complaint"],
+                "states": ["Punjab"],
+                "guidance_steps": [
+                    "Visit Punjab PGRS",
+                    "Submit grievance",
+                    "Register account",
+                    "Select department",
+                    "Provide complaint details",
+                    "Submit and monitor"
+                ]
+            },
+            {
+                "name": "Haryana Antyodaya Saral Portal",
+                "description": "Single window portal for Haryana services",
+                "url": "https://saralharyana.gov.in/",
+                "categories": ["Water Supply", "Electricity", "Road Maintenance", "Waste Management", "General Complaint"],
+                "states": ["Haryana"],
+                "guidance_steps": [
+                    "Visit Saral Haryana portal",
+                    "Register grievance",
+                    "Create login credentials",
+                    "Choose service",
+                    "Fill application form",
+                    "Track status online"
+                ]
+            },
+            {
+                "name": "CPGRAMS - Centralized Public Grievance Redress System",
+                "description": "National portal for grievances (fallback for all states)",
+                "url": "https://pgportal.gov.in/",
+                "categories": ["Water Supply", "Electricity", "Road Maintenance", "Waste Management", "General Complaint", "Public Transport", "Healthcare", "Education", "Police", "Revenue"],
+                "states": ["All India", "Arunachal Pradesh", "Assam", "Chhattisgarh", "Goa", "Himachal Pradesh", "Jharkhand", "Manipur", "Meghalaya", "Mizoram", "Nagaland", "Odisha", "Sikkim", "Tripura", "Uttarakhand", "Jammu and Kashmir", "Ladakh", "Puducherry"],
+                "guidance_steps": [
+                    "Visit CPGRAMS portal at pgportal.gov.in",
+                    "Click 'Lodge Public Grievance'",
+                    "Register with email/mobile or login",
+                    "Select ministry/department/state",
+                    "Fill complaint details clearly",
+                    "Upload documents (if required)",
+                    "Submit and save registration number for tracking"
+                ]
+            },
+            {
+                "name": "National Consumer Helpline",
+                "description": "Consumer complaints and disputes resolution",
+                "url": "https://consumerhelpline.gov.in/",
+                "categories": ["Consumer Rights"],
+                "states": ["All India"],
+                "guidance_steps": [
+                    "Visit consumerhelpline.gov.in",
+                    "Register or login",
+                    "Lodge your complaint",
+                    "Provide bill/receipt details",
+                    "Upload supporting documents",
+                    "Track complaint status online"
+                ]
+            },
+            {
+                "name": "National Health Portal - Grievance",
+                "description": "Healthcare related complaints",
+                "url": "https://www.nhp.gov.in/",
+                "categories": ["Healthcare"],
+                "states": ["All India"],
+                "guidance_steps": [
+                    "Visit National Health Portal",
+                    "Navigate to grievance section",
+                    "Register complaint",
+                    "Provide hospital/clinic details",
+                    "Describe health service issue",
+                    "Submit with supporting documents"
+                ]
+            },
+            {
+                "name": "Ministry of Education - Grievance Portal",
+                "description": "Education related complaints and issues",
+                "url": "https://pgportal.gov.in/",
+                "categories": ["Education"],
+                "states": ["All India"],
+                "guidance_steps": [
+                    "Visit CPGRAMS portal",
+                    "Select Ministry of Education",
+                    "Register complaint",
+                    "Specify institution details",
+                    "Describe educational grievance",
+                    "Submit and track"
+                ]
+            },
+            {
+                "name": "Ministry of Road Transport - Grievance",
+                "description": "Public transport and road safety complaints",
+                "url": "https://pgportal.gov.in/",
+                "categories": ["Public Transport"],
+                "states": ["All India"],
+                "guidance_steps": [
+                    "Visit CPGRAMS portal",
+                    "Select Ministry of Road Transport",
+                    "Register complaint",
+                    "Provide transport service details",
+                    "Upload evidence if available",
+                    "Submit and monitor status"
+                ]
+            }
+        ]
+        await db.portals.insert_many(portals)
+        logger.info("Portal database seeded with state-specific portals")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
