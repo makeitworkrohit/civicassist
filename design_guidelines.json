@@ -1,0 +1,134 @@
+{
+  "theme": "light",
+  "archetype": "4 (Swiss & High-Contrast)",
+  "vibe": "Objective, authoritative, functional, clear, and trustworthy. The anti-bureaucracy aesthetic.",
+  "colors": {
+    "primary": {
+      "DEFAULT": "#002FA7",
+      "foreground": "#FFFFFF",
+      "hover": "#002280",
+      "description": "International Klein Blue - for primary actions and routing logic"
+    },
+    "secondary": {
+      "DEFAULT": "#09090B",
+      "foreground": "#FFFFFF",
+      "hover": "#27272A",
+      "description": "Pitch Black - for secondary actions and high-contrast accents"
+    },
+    "accent": {
+      "DEFAULT": "#E11D48",
+      "foreground": "#FFFFFF",
+      "hover": "#BE123C",
+      "description": "Signal Red - for urgency, errors, and critical steps"
+    },
+    "background": {
+      "DEFAULT": "#FFFFFF",
+      "alt": "#F4F4F5",
+      "description": "Stark White base with 10% Grey alternative surfaces"
+    },
+    "text": {
+      "primary": "#09090B",
+      "secondary": "#52525B",
+      "inverse": "#FFFFFF",
+      "muted": "#A1A1AA"
+    },
+    "border": {
+      "DEFAULT": "#E4E4E7",
+      "strong": "#09090B",
+      "focus": "#002FA7"
+    }
+  },
+  "typography": {
+    "fonts": {
+      "headings": "Chivo, sans-serif",
+      "body": "IBM Plex Sans, sans-serif",
+      "mono": "IBM Plex Mono, monospace"
+    },
+    "styles": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl font-black tracking-tighter leading-none",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl font-bold tracking-tight leading-tight",
+      "h3": "text-xl sm:text-2xl font-bold tracking-tight",
+      "body": "text-base font-normal leading-relaxed text-secondary",
+      "label": "text-xs font-bold uppercase tracking-[0.2em] text-secondary",
+      "mono_data": "font-mono text-sm tracking-tight text-primary"
+    },
+    "rules": {
+      "headings": "Never center by default. Left-align for objective clarity.",
+      "hierarchy": "Hierarchy gap rule: Do not exceed 2 Tailwind steps between heading and subheading."
+    }
+  },
+  "spacing_and_layout": {
+    "marketing": {
+      "grid": "grid-cols-1 md:grid-cols-8 lg:grid-cols-12 gap-8 md:gap-12",
+      "padding": "py-24 md:py-32",
+      "philosophy": "Asymmetry and tension. Use empty columns (col-span-2) to create negative space."
+    },
+    "app_dashboard": {
+      "grid": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4",
+      "padding": "p-6",
+      "philosophy": "The Control Room. Dense, border-collapse style. Every pixel utilized. No soft shadows."
+    },
+    "borders_and_surfaces": {
+      "radius": "rounded-none md:rounded-sm",
+      "shadows": "shadow-none",
+      "borders": "border border-border, hover:border-strong transition-colors",
+      "glassmorphism": "backdrop-blur-xl bg-white/70 border-b border-black/10 (Only for sticky headers)"
+    }
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-primary text-white font-bold uppercase tracking-wide rounded-none border border-transparent hover:bg-primary-hover transition-colors px-6 py-3",
+      "secondary": "bg-transparent text-strong border border-strong font-bold uppercase tracking-wide rounded-none hover:bg-strong hover:text-white transition-colors px-6 py-3"
+    },
+    "cards": {
+      "default": "bg-white border border-border p-6 rounded-none",
+      "active": "bg-background-alt border border-strong p-6 rounded-none relative after:absolute after:left-0 after:top-0 after:h-full after:w-1 after:bg-primary"
+    },
+    "forms": {
+      "input": "bg-transparent border border-border rounded-none focus:border-strong focus:ring-1 focus:ring-strong transition-all h-12 px-4 font-mono text-sm",
+      "label": "text-xs font-bold uppercase tracking-[0.2em] text-secondary mb-2 block"
+    },
+    "special": {
+      "ai_confirmation": "Use the 'Tracing Beam' concept (linear gradient border mask or an animated outline) around the AI simplified text to highlight the machine-processing step.",
+      "step_by_step": "Use a vertical timeline with 1px solid black lines connecting stark, numbered squares (e.g., '01', '02'). Minimalist, no soft icons."
+    }
+  },
+  "motion": {
+    "hover": "Slight lift (-translate-y-1) for dashboard cards, border color darkens to pitch black. Fast transition (150ms ease).",
+    "page_load": "Staggered fade-up for bento grid items. Stiff spring animation to feel mechanical and precise."
+  },
+  "media": {
+    "rules": {
+      "overlays": "Max bg-black/30 or bg-white/40 for hero images. Never go darker. If text is unreadable, use text-shadow or a gradient fade.",
+      "style": "High contrast, architectural, real people in urban environments. No illustrative vectors.",
+      "placeholders_forbidden": true
+    },
+    "images": {
+      "hero_architecture": {
+        "url": "https://images.unsplash.com/photo-1761792425134-7e09471c5b55?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MTN8MHwxfHNlYXJjaHwzfHxtb2Rlcm4lMjBnb3Zlcm5tZW50JTIwYnVpbGRpbmclMjBhcmNoaXRlY3R1cmV8ZW58MHx8fHwxNzc1MTY4MDI4fDA&ixlib=rb-4.1.0&q=85",
+        "alt": "Modern brutalist government building facade against blue sky",
+        "usage": "Hero section background or contextual image for the 'About/Mission' section. Blend with white using a harsh linear gradient."
+      },
+      "user_context": {
+        "url": "https://images.unsplash.com/photo-1709701576120-7c15eaff1fcb?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHwyfHxwZXJzb24lMjB1c2luZyUyMHBob25lJTIwY2l0eSUyMHN0cmVldHxlbnwwfHx8fDE3NzUxNjgwMTZ8MA&ixlib=rb-4.1.0&q=85",
+        "alt": "Woman looking at her cell phone in the city",
+        "usage": "Use in 'How it Works' or the landing page to represent the citizen dealing with an issue on the go."
+      },
+      "abstract_process": {
+        "url": "https://images.pexels.com/photos/27771828/pexels-photo-27771828.jpeg",
+        "alt": "Dynamic blue geometric pattern with intersecting lines",
+        "usage": "Use as a textured background for the AI processing step or the portal routing outcome to visually represent 'sorting and directing data'."
+      }
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly adhere to the Swiss & High-Contrast archetype. Do not introduce soft shadows (shadow-md, shadow-lg) or large border radii (rounded-lg, rounded-xl, rounded-full) on standard containers.",
+    "Use pure HTML/Tailwind for the marketing homepage layout to achieve an overlapping, asymmetrical grid. Do not use Shadcn 'Card' wrappers for the hero section.",
+    "For the main app flow (Authentication, Problem Input, Portal Routing), use customized Shadcn components. Override default Shadcn border-radius to `rounded-none` or `rounded-sm`.",
+    "The primary action button (e.g., 'Simplify My Problem', 'Go to Portal') must use the International Klein Blue (#002FA7). All secondary buttons should be stark black outline.",
+    "Voice input needs a prominent, high-contrast CTA, perhaps an icon button with a stark border and hover state.",
+    "Implement the step-by-step guidance as a technical, clean accordion or a rigid vertical timeline with 1px black lines.",
+    "Use Phosphor Icons (@phosphor-icons/react) with the 'regular' or 'bold' weight for a technical, crisp feel.",
+    "Ensure all interactive elements have a `data-testid` attribute in kebab-case."
+  ]
+}
