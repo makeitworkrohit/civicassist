@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
-import { Microphone, Stop, ArrowRight, CheckCircle, XCircle } from '@phosphor-icons/react';
+import { Microphone, Stop, ArrowRight, CheckCircle, XCircle, Phone } from '@phosphor-icons/react';
 import { toast } from 'sonner';
 import ComplaintDraft from '../components/ComplaintDraft';
 import DocumentHelper from '../components/DocumentHelper';
@@ -22,6 +22,7 @@ const ComplaintPage = () => {
   const [complaintId, setComplaintId] = useState(null);
   const [loading, setLoading] = useState(false);
   const [mediaRecorder, setMediaRecorder] = useState(null);
+  const [showLocalHelp, setShowLocalHelp] = useState(false);
 
   const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
   const API = `${BACKEND_URL}/api`;
@@ -296,12 +297,6 @@ const ComplaintPage = () => {
               </a>
             </div>
 
-            {/* Document Helper */}
-            <DocumentHelper category={category} complaintId={complaintId} />
-
-            {/* Local Help Section */}
-            <LocalHelpSection state={user.state} city={user.city} category={category} />
-
             {/* Step-by-Step Guidance */}
             {portal.guidance_steps && portal.guidance_steps.length > 0 && (
               <div className="bg-white border border-[#E4E4E7] p-8">
@@ -319,6 +314,37 @@ const ComplaintPage = () => {
               </div>
             )}
 
+            {/* Document Helper */}
+            <DocumentHelper category={category} complaintId={complaintId} />
+
+            {/* Local Help Toggle Button */}
+            <div className="text-center">
+              <button
+                onClick={() => setShowLocalHelp(!showLocalHelp)}
+                data-testid="toggle-local-help-button"
+                className="inline-flex items-center gap-3 bg-transparent text-[#09090B] border-2 border-[#09090B] font-bold uppercase tracking-wide rounded-none hover:bg-[#09090B] hover:text-white transition-colors px-8 py-3"
+              >
+                {showLocalHelp ? (
+                  <>
+                    <XCircle size={20} weight="bold" />
+                    Hide Local Help & Contacts
+                  </>
+                ) : (
+                  <>
+                    <Phone size={20} weight="bold" />
+                    Need Local Help & Contacts?
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* Local Help Section - Collapsible */}
+            {showLocalHelp && (
+              <div className="animate-fadeIn">
+                <LocalHelpSection state={user.state} city={user.city} category={category} />
+              </div>
+            )}
+
             <button
               onClick={() => {
                 setStep(1);
@@ -329,6 +355,7 @@ const ComplaintPage = () => {
                 setDraftDescription('');
                 setPortal(null);
                 setComplaintId(null);
+                setShowLocalHelp(false);
               }}
               data-testid="file-another-complaint-button"
               className="w-full bg-transparent text-[#09090B] border border-[#09090B] font-bold uppercase tracking-wide rounded-none hover:bg-[#09090B] hover:text-white transition-colors px-6 py-3"
