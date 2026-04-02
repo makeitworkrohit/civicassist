@@ -203,19 +203,38 @@ async def simplify_complaint(request: SimplifyRequest, user: dict = Depends(get_
         chat = LlmChat(
             api_key=EMERGENT_LLM_KEY,
             session_id=f"simplify-{user['id']}-{uuid.uuid4()}",
-            system_message="You are a complaint processing assistant. Simplify user complaints into clear, concise statements and classify them into categories like: Water Supply, Electricity, Road Maintenance, Waste Management, Public Transport, Healthcare, Education, Police, Revenue, Consumer Rights, or Other. Return JSON with 'simplified' and 'category' keys."
+            system_message="You are a complaint processing assistant. Simplify user complaints into clear, concise statements and classify them into categories like: Water Supply, Electricity, Road Maintenance, Waste Management, Public Transport, Healthcare, Education, Police, Revenue, Consumer Rights, or Other. Return ONLY a valid JSON object with 'simplified' and 'category' keys, without any markdown formatting or code blocks."
         ).with_model("openai", "gpt-4o")
         
         user_message = UserMessage(text=f"Simplify this complaint and categorize it: {request.text}")
         response = await chat.send_message(user_message)
         
         import json
+        import re
+        
+        # Clean the response - remove markdown code blocks if present
+        cleaned_response = response.strip()
+        
+        # Remove ```json and ``` markers
+        cleaned_response = re.sub(r'^```json\s*', '', cleaned_response)
+        cleaned_response = re.sub(r'^```\s*', '', cleaned_response)
+        cleaned_response = re.sub(r'\s*```$', '', cleaned_response)
+        cleaned_response = cleaned_response.strip()
+        
         try:
-            result = json.loads(response)
-            return result
+            result = json.loads(cleaned_response)
+            # Ensure both keys exist
+            if 'simplified' in result and 'category' in result:
+                return {
+                    "simplified": result['simplified'],
+                    "category": result['category']
+                }
+            else:
+                raise ValueError("Missing required keys")
         except:
+            # If JSON parsing fails, try to extract information from plain text
             return {
-                "simplified": response,
+                "simplified": request.text,
                 "category": "General Complaint"
             }
     except Exception as e:
