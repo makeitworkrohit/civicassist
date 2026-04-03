@@ -9,7 +9,7 @@ const HomePage = () => {
   return (
     <div className="min-h-screen">
       <section className="relative min-h-[80vh] flex items-center" style={{
-        backgroundImage: 'url(https://images.unsplash.com/photo-1761792425134-7e09471c5b55?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MTN8MHwxfHNlYXJjaHwzfHxtb2Rlcm4lMjBnb3Zlcm5tZW50JTIwYnVpbGRpbmclMjBhcmNoaXRlY3R1cmV8ZW58MHx8fHwxNzc1MTY4MDI4fDA&ixlib=rb-4.1.0&q=85)',
+        backgroundImage: 'url(https://images.unsplash.com/photo-1696250530079-1335d757ee45?q=80&w=764&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D)',
         backgroundSize: 'cover',
         backgroundPosition: 'center'
       }}>
