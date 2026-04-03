@@ -25,7 +25,7 @@ const HomePage = () => {
               <span className="text-[#002FA7]">Instantly.</span>
             </h1>
             <p className="text-base text-[#52525B] leading-relaxed mb-8 max-w-xl">
-              Civic Assist uses AI to simplify your complaint, identify the issue, and direct you to the exact government portal—saving time and eliminating confusion.
+              Civic Assist uses AI to simplify your complaint, identify the issue, and direct you to the exact government portal, saving time and eliminating confusion.
             </p>
             <Link
               to={user ? "/complaint" : "/login"}
@@ -93,7 +93,7 @@ const HomePage = () => {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
             <div>
               <img 
-                src="https://images.unsplash.com/photo-1709701576120-7c15eaff1fcb?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHwyfHxwZXJzb24lMjB1c2luZyUyMHBob25lJTIwY2l0eSUyMHN0cmVldHxlbnwwfHx8fDE3NzUxNjgwMTZ8MA&ixlib=rb-4.1.0&q=85"
+                src="https://images.unsplash.com/photo-1625332788244-dcdac8cfccc9?q=80&w=1170&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D"
                 alt="Person using phone in city"
                 className="w-full h-96 object-cover border border-[#E4E4E7]"
               />
