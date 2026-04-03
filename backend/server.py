@@ -12,8 +12,8 @@ import uuid
 from datetime import datetime, timezone, timedelta
 import jwt
 import bcrypt
-from openai.llm.chat import LlmChat, UserMessage
-from openai.llm.openai import OpenAISpeechToText
+from openai import LlmChat, UserMessage
+from openai import OpenAISpeechToText
 import io
 
 ROOT_DIR = Path(__file__).parent
