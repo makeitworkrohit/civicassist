@@ -16,6 +16,8 @@ import uuid
 from datetime import datetime, timezone, timedelta
 import jwt
 import bcrypt
+import hashlib
+import secrets
 from openai import LlmChat, UserMessage
 from openai import OpenAISpeechToText
 import io
@@ -140,6 +142,41 @@ class Portal(BaseModel):
     states: List[str]
     guidance_steps: List[str]
 
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    iterations = 100000
+    key = hashlib.pbkdf2_hmac(
+        'sha256',
+        password.encode('utf-8'),
+        salt.encode('utf-8'),
+        iterations
+    )
+    return f"pbkdf2_sha256${iterations}${salt}${key.hex()}"
+
+def verify_password(password: str, hashed_password: str) -> bool:
+    if hashed_password.startswith("pbkdf2_sha256$"):
+        try:
+            parts = hashed_password.split('$')
+            if len(parts) != 4:
+                return False
+            _, iterations_str, salt, original_hash = parts
+            iterations = int(iterations_str)
+            key = hashlib.pbkdf2_hmac(
+                'sha256',
+                password.encode('utf-8'),
+                salt.encode('utf-8'),
+                iterations
+            )
+            return secrets.compare_digest(key.hex(), original_hash)
+        except Exception:
+            return False
+    elif hashed_password.startswith("$2b$") or hashed_password.startswith("$2a$"):
+        try:
+            return bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8'))
+        except Exception:
+            return False
+    return False
+
 def create_token(user_id: str) -> str:
     payload = {
         'user_id': user_id,
@@ -171,7 +208,7 @@ async def register(request: Request, user_data: UserRegister):
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     
-    password_hash = bcrypt.hashpw(user_data.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    password_hash = hash_password(user_data.password)
     user = User(
         name=user_data.name,
         email=user_data.email,
@@ -195,8 +232,20 @@ async def login(request: Request, credentials: UserLogin):
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
-    if not bcrypt.checkpw(credentials.password.encode('utf-8'), user['password_hash'].encode('utf-8')):
+    if not verify_password(credentials.password, user['password_hash']):
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    # Auto-migrate password hash to high-performance PBKDF2-SHA256 if user logged in using old bcrypt hash
+    if user['password_hash'].startswith("$2b$") or user['password_hash'].startswith("$2a$"):
+        try:
+            new_hash = hash_password(credentials.password)
+            await db.users.update_one(
+                {"id": user['id']},
+                {"$set": {"password_hash": new_hash}}
+            )
+            user['password_hash'] = new_hash
+        except Exception:
+            pass
     
     token = create_token(user['id'])
     user_response = UserResponse(**{k: v for k, v in user.items() if k != 'password_hash'})
