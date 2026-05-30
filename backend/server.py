@@ -1,8 +1,12 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import os
 import logging
 from pathlib import Path
@@ -27,7 +31,27 @@ app = FastAPI()
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer()
 
-JWT_SECRET = os.getenv('JWT_SECRET', 'civic-assist-secret-key-2026')
+# Rate limiter setup
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+# Security headers middleware
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=()"
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+JWT_SECRET = os.environ['JWT_SECRET']  # MUST be set — no insecure fallback
 JWT_ALGORITHM = 'HS256'
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
 
@@ -43,19 +67,19 @@ class User(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class UserRegister(BaseModel):
-    name: str
+    name: str = Field(..., min_length=2, max_length=100)
     email: EmailStr
-    password: str
+    password: str = Field(..., min_length=8, max_length=128)
 
 class UserLogin(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(..., min_length=8, max_length=128)
 
 class UserProfile(BaseModel):
-    name: str
-    state: str
-    city: str
-    pincode: str
+    name: str = Field(..., min_length=2, max_length=100)
+    state: str = Field(..., min_length=2, max_length=100)
+    city: str = Field(..., min_length=2, max_length=100)
+    pincode: str = Field(default='', max_length=10)
 
 class UserResponse(BaseModel):
     id: str
@@ -80,12 +104,12 @@ class Complaint(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class SimplifyRequest(BaseModel):
-    text: str
+    text: str = Field(..., min_length=10, max_length=5000)
 
 class PortalSuggestionRequest(BaseModel):
-    category: str
-    state: str
-    city: str
+    category: str = Field(..., min_length=2, max_length=100)
+    state: str = Field(..., min_length=2, max_length=100)
+    city: str = Field(..., min_length=2, max_length=100)
 
 class ComplaintSubmit(BaseModel):
     original_input: str
@@ -96,9 +120,9 @@ class ComplaintSubmit(BaseModel):
     draft_description: Optional[str] = None
 
 class ContactMessage(BaseModel):
-    name: str
+    name: str = Field(..., min_length=1, max_length=100)
     email: EmailStr
-    message: str
+    message: str = Field(..., min_length=10, max_length=2000)
 
 class DocumentSuggestRequest(BaseModel):
     category: str
@@ -141,7 +165,8 @@ async def root():
     return {"message": "Civic Assist API"}
 
 @api_router.post("/auth/register")
-async def register(user_data: UserRegister):
+@limiter.limit("3/minute")
+async def register(request: Request, user_data: UserRegister):
     existing = await db.users.find_one({"email": user_data.email}, {"_id": 0})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -164,7 +189,8 @@ async def register(user_data: UserRegister):
     }
 
 @api_router.post("/auth/login")
-async def login(credentials: UserLogin):
+@limiter.limit("5/minute")
+async def login(request: Request, credentials: UserLogin):
     user = await db.users.find_one({"email": credentials.email}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -190,7 +216,8 @@ async def update_profile(profile: UserProfile, user: dict = Depends(get_current_
     return UserResponse(**{k: v for k, v in updated_user.items() if k != 'password_hash'})
 
 @api_router.post("/complaint/transcribe")
-async def transcribe_audio(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+@limiter.limit("5/minute")
+async def transcribe_audio(request: Request, file: UploadFile = File(...), user: dict = Depends(get_current_user)):
     try:
         audio_data = await file.read()
         audio_file = io.BytesIO(audio_data)
@@ -205,10 +232,12 @@ async def transcribe_audio(file: UploadFile = File(...), user: dict = Depends(ge
         
         return {"text": response.text}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+        logger.error(f"Transcription failed for user {user.get('id', 'unknown')}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Transcription failed. Please try again.")
 
 @api_router.post("/complaint/simplify")
-async def simplify_complaint(request: SimplifyRequest, user: dict = Depends(get_current_user)):
+@limiter.limit("10/minute")
+async def simplify_complaint(request: Request, simplify_request: SimplifyRequest, user: dict = Depends(get_current_user)):
     try:
         chat = LlmChat(
             api_key=EMERGENT_LLM_KEY,
@@ -216,7 +245,7 @@ async def simplify_complaint(request: SimplifyRequest, user: dict = Depends(get_
             system_message="You are a complaint processing assistant. Simplify user complaints into clear, concise statements and classify them into categories like: Water Supply, Electricity, Road Maintenance, Waste Management, Public Transport, Healthcare, Education, Police, Revenue, Consumer Rights, or Other. Also generate a formal government-ready complaint with a subject line and detailed description. Return ONLY a valid JSON object with these keys: 'simplified' (brief summary), 'category' (complaint type), 'subject' (formal subject line for government portal), 'description' (formal detailed complaint description ready for submission). Do not use markdown formatting or code blocks."
         ).with_model("openai", "gpt-4o")
         
-        user_message = UserMessage(text=f"Simplify this complaint, categorize it, and create a formal government-ready complaint draft with subject and description: {request.text}")
+        user_message = UserMessage(text=f"Simplify this complaint, categorize it, and create a formal government-ready complaint draft with subject and description: {simplify_request.text}")
         response = await chat.send_message(user_message)
         
         import json
@@ -242,21 +271,22 @@ async def simplify_complaint(request: SimplifyRequest, user: dict = Depends(get_
             else:
                 # Fallback if AI doesn't return all fields
                 return {
-                    "simplified": result.get('simplified', request.text),
+                    "simplified": result.get('simplified', simplify_request.text),
                     "category": result.get('category', 'General Complaint'),
                     "subject": result.get('subject', f"Complaint regarding {result.get('category', 'General Issue')}"),
-                    "description": result.get('description', request.text)
+                    "description": result.get('description', simplify_request.text)
                 }
         except:
             # If JSON parsing fails completely
             return {
-                "simplified": request.text,
+                "simplified": simplify_request.text,
                 "category": "General Complaint",
                 "subject": "Complaint regarding General Issue",
-                "description": request.text
+                "description": simplify_request.text
             }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI processing failed: {str(e)}")
+        logger.error(f"AI processing failed for user {user.get('id', 'unknown')}: {str(e)}")
+        raise HTTPException(status_code=500, detail="AI processing failed. Please try again.")
 
 @api_router.post("/complaint/submit")
 async def submit_complaint(complaint_data: ComplaintSubmit, user: dict = Depends(get_current_user)):
@@ -579,7 +609,8 @@ async def suggest_portal(request: PortalSuggestionRequest, user: dict = Depends(
     return portal
 
 @api_router.post("/contact")
-async def submit_contact(message: ContactMessage):
+@limiter.limit("3/minute")
+async def submit_contact(request: Request, message: ContactMessage):
     doc = message.model_dump()
     doc['id'] = str(uuid.uuid4())
     doc['timestamp'] = datetime.now(timezone.utc).isoformat()
@@ -642,7 +673,7 @@ app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=os.environ['CORS_ORIGINS'].split(','),  # MUST be explicitly configured
     allow_methods=["*"],
     allow_headers=["*"],
 )
