@@ -57,6 +57,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 JWT_SECRET = os.environ['JWT_SECRET']  # MUST be set — no insecure fallback
 JWT_ALGORITHM = 'HS256'
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
+openai_client = AsyncOpenAI(api_key=EMERGENT_LLM_KEY)
 
 class User(BaseModel):
     model_config = ConfigDict(extra="ignore")
