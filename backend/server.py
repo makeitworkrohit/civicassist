@@ -497,17 +497,18 @@ async def get_documents(complaint_id: str, user: dict = Depends(get_current_user
 @api_router.post("/locations/local-help")
 async def get_local_help(request: LocalHelpRequest, user: dict = Depends(get_current_user)):
     prompt = f"""
-    You are an expert civic assistant for India.
-    The user needs to know the correct local government offline offices and official helpline numbers 
-    for their civic issue.
+    You are an expert civic assistant for India with deep knowledge of municipal corporations, state government departments, and local civic bodies.
+    The user needs to know the correct local government offline offices and official helpline numbers for their civic issue.
     
     Category of issue: {request.category}
     State: {request.state}
     City: {request.city}
     Pincode: {request.pincode or 'Not provided'}
     
-    Identify the real, official municipal or government contacts responsible for this issue in this specific area.
-    If you don't know the exact local office for the pincode, provide the main city or district-level office.
+    CRITICAL INSTRUCTIONS:
+    1. DO NOT provide generic fallbacks like "Use CPGRAMS" or "Visit portal". You MUST provide REAL phone numbers (e.g., toll-free 1912 for electricity, 155304 for municipal, or specific 10-digit numbers).
+    2. Provide a REAL physical address for the local municipal office, ward office, or district collectorate responsible for {request.city}. 
+    3. Use your extensive training data to retrieve the exact or closest matching official contact details for {request.state} and {request.city}.
     
     Output strictly in this JSON format:
     {{
@@ -546,7 +547,7 @@ async def get_local_help(request: LocalHelpRequest, user: dict = Depends(get_cur
 @api_router.post("/portal/suggest")
 async def suggest_portal(request: PortalSuggestionRequest, user: dict = Depends(get_current_user)):
     prompt = f"""
-    You are an expert civic assistant for India.
+    You are an expert civic assistant for India with deep knowledge of state-level grievance portals (e.g., Aaple Sarkar in Maharashtra, CM Helpline in MP, e-NagarSewa, etc.).
     The user needs to file a formal complaint online.
     
     Category of issue: {request.category}
@@ -554,8 +555,10 @@ async def suggest_portal(request: PortalSuggestionRequest, user: dict = Depends(
     City: {request.city}
     Pincode: {request.pincode or 'Not provided'}
     
-    Identify the most appropriate official government portal to lodge this specific complaint. 
-    If a specific state or municipal portal exists for this, suggest that. Otherwise, suggest a national portal like CPGRAMS.
+    CRITICAL INSTRUCTIONS:
+    1. DO NOT suggest the national CPGRAMS portal UNLESS there is absolutely no state-level or municipal-level portal available.
+    2. Prioritize the specific Municipal Corporation website for {request.city} or the official State Government Grievance Portal for {request.state}.
+    3. Provide the REAL URL for the state/local portal.
     
     Output strictly in this JSON format matching the 'Portal' schema:
     {{
