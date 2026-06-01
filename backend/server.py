@@ -536,12 +536,13 @@ async def get_local_help(request: LocalHelpRequest, user: dict = Depends(get_cur
         )
         return json.loads(response.choices[0].message.content)
     except Exception as e:
-        print(f"Error fetching local help from OpenAI: {e}")
+        error_msg = str(e)
+        print(f"Error fetching local help from OpenAI: {error_msg}")
         return {
             "state": request.state,
             "city": request.city,
-            "contacts": [{"office": "State Helpline", "phone": "Use CPGRAMS", "email": "NA", "timings": "Visit portal"}],
-            "offices": [{"name": "District Collector Office", "address": f"Contact local district office in {request.city}", "department": "General Administration"}],
+            "contacts": [{"office": "State Helpline", "phone": "Use CPGRAMS", "email": "NA", "timings": f"Error: {error_msg[:50]}"}],
+            "offices": [{"name": "Error Occurred", "address": f"Error: {error_msg}", "department": "System Error"}],
             "alternate_portals": []
         }
 
@@ -585,10 +586,11 @@ async def suggest_portal(request: PortalSuggestionRequest, user: dict = Depends(
         )
         return json.loads(response.choices[0].message.content)
     except Exception as e:
-        print(f"Error fetching portal suggestion from OpenAI: {e}")
+        error_msg = str(e)
+        print(f"Error fetching portal suggestion from OpenAI: {error_msg}")
         return {
-            "name": "CPGRAMS - Centralized Public Grievance Redress System",
-            "description": "National portal for lodging grievances to Government departments",
+            "name": f"ERROR: {error_msg[:100]}",
+            "description": f"Failed with error: {error_msg}",
             "url": "https://pgportal.gov.in/",
             "guidance_steps": [
                 "Visit the CPGRAMS portal",
