@@ -3,7 +3,7 @@ import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { Phone, EnvelopeSimple, MapPin, Clock, Buildings } from '@phosphor-icons/react';
 
-const LocalHelpSection = ({ state, city, category }) => {
+const LocalHelpSection = ({ state, city, category, pincode }) => {
   const { token } = useAuth();
   const [helpData, setHelpData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -13,13 +13,13 @@ const LocalHelpSection = ({ state, city, category }) => {
 
   useEffect(() => {
     fetchLocalHelp();
-  }, [state, city, category]);
+  }, [state, city, category, pincode]);
 
   const fetchLocalHelp = async () => {
     try {
       const response = await axios.post(
         `${API}/locations/local-help`,
-        { state, city, category },
+        { state, city, category, pincode },
         { headers: { Authorization: `Bearer ${token}` } }
       );
       setHelpData(response.data);

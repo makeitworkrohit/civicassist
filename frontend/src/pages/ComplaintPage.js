@@ -128,7 +128,7 @@ const ComplaintPage = () => {
     try {
       const portalResponse = await axios.post(
         `${API}/portal/suggest`,
-        { category, state: user.state, city: user.city },
+        { category, state: user.state, city: user.city, pincode: user.pincode },
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
@@ -341,7 +341,7 @@ const ComplaintPage = () => {
             {/* Local Help Section - Collapsible */}
             {showLocalHelp && (
               <div className="animate-fadeIn">
-                <LocalHelpSection state={user.state} city={user.city} category={category} />
+                <LocalHelpSection state={user.state} city={user.city} category={category} pincode={user.pincode} />
               </div>
             )}
 

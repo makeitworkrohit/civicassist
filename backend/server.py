@@ -21,6 +21,7 @@ import hashlib
 import secrets
 from openai import AsyncOpenAI
 import io
+import json
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -112,6 +113,7 @@ class PortalSuggestionRequest(BaseModel):
     category: str = Field(..., min_length=2, max_length=100)
     state: str = Field(..., min_length=2, max_length=100)
     city: str = Field(..., min_length=2, max_length=100)
+    pincode: Optional[str] = None
 
 class ComplaintSubmit(BaseModel):
     original_input: str
@@ -133,6 +135,7 @@ class LocalHelpRequest(BaseModel):
     state: str
     city: str
     category: str
+    pincode: Optional[str] = None
 
 class Portal(BaseModel):
     name: str
@@ -493,174 +496,92 @@ async def get_documents(complaint_id: str, user: dict = Depends(get_current_user
 
 @api_router.post("/locations/local-help")
 async def get_local_help(request: LocalHelpRequest, user: dict = Depends(get_current_user)):
-    # Local authority data (can be expanded with real data)
-    local_authorities = {
-        "Maharashtra": {
-            "Mumbai": {
-                "contacts": [
-                    {
-                        "office": "Mumbai Municipal Corporation - Complaint Cell",
-                        "phone": "022-22694727",
-                        "email": "complaints.mcgm@gmail.com",
-                        "timings": "Mon-Sat, 10 AM - 6 PM"
-                    },
-                    {
-                        "office": "Maharashtra Electricity Distribution Co. Ltd. (MSEDCL)",
-                        "phone": "1912",
-                        "email": "support@mahadiscom.in",
-                        "timings": "24/7 Helpline"
-                    }
-                ],
-                "offices": [
-                    {
-                        "name": "BMC Head Office",
-                        "address": "Mahapalika Marg, Fort, Mumbai - 400001",
-                        "department": "General Administration"
-                    },
-                    {
-                        "name": "BEST Undertaking Office",
-                        "address": "BEST Bhavan, Colaba Depot, Mumbai - 400005",
-                        "department": "Electricity & Transport"
-                    }
-                ]
-            }
-        },
-        "Karnataka": {
-            "Bengaluru": {
-                "contacts": [
-                    {
-                        "office": "BBMP Complaint Cell",
-                        "phone": "080-22975000",
-                        "email": "complaints@bbmp.gov.in",
-                        "timings": "Mon-Sat, 9:30 AM - 5:30 PM"
-                    },
-                    {
-                        "office": "BESCOM Helpline",
-                        "phone": "1912",
-                        "email": "bescom@karnataka.gov.in",
-                        "timings": "24/7"
-                    }
-                ],
-                "offices": [
-                    {
-                        "name": "BBMP Head Office",
-                        "address": "N.R. Square, Bangalore - 560002",
-                        "department": "Municipal Corporation"
-                    }
-                ]
-            }
-        },
-        "Tamil Nadu": {
-            "Chennai": {
-                "contacts": [
-                    {
-                        "office": "Greater Chennai Corporation",
-                        "phone": "044-25384520",
-                        "email": "gcc@chennaicorporation.gov.in",
-                        "timings": "Mon-Fri, 9 AM - 5 PM"
-                    }
-                ],
-                "offices": [
-                    {
-                        "name": "Chennai Corporation Head Office",
-                        "address": "Ripon Building, NSC Bose Road, Chennai - 600003",
-                        "department": "Municipal Services"
-                    }
-                ]
-            }
-        },
-        "Delhi": {
-            "New Delhi": {
-                "contacts": [
-                    {
-                        "office": "NDMC Complaint Cell",
-                        "phone": "011-23321054",
-                        "email": "complaints@ndmc.gov.in",
-                        "timings": "Mon-Fri, 9 AM - 6 PM"
-                    },
-                    {
-                        "office": "BSES Yamuna/Rajdhani Helpline",
-                        "phone": "19123",
-                        "email": "customercare@bsesdelhi.com",
-                        "timings": "24/7"
-                    }
-                ],
-                "offices": [
-                    {
-                        "name": "NDMC Office",
-                        "address": "Palika Kendra, Sansad Marg, New Delhi - 110001",
-                        "department": "Municipal Services"
-                    }
-                ]
-            }
-        }
-    }
+    prompt = f"""
+    You are an expert civic assistant for India.
+    The user needs to know the correct local government offline offices and official helpline numbers 
+    for their civic issue.
     
-    # Get data for user's location
-    state_data = local_authorities.get(request.state, {})
-    city_data = state_data.get(request.city, {})
+    Category of issue: {request.category}
+    State: {request.state}
+    City: {request.city}
+    Pincode: {request.pincode or 'Not provided'}
     
-    # Default fallback
-    if not city_data:
-        city_data = {
-            "contacts": [
-                {
-                    "office": "State Helpline",
-                    "phone": "Use CPGRAMS portal for contact",
-                    "email": "NA",
-                    "timings": "Visit portal"
-                }
+    Identify the real, official municipal or government contacts responsible for this issue in this specific area.
+    If you don't know the exact local office for the pincode, provide the main city or district-level office.
+    
+    Output strictly in this JSON format:
+    {{
+        "state": "{request.state}",
+        "city": "{request.city}",
+        "contacts": [
+            {{"office": "Name of office/helpline", "phone": "Phone number", "email": "Email (or NA)", "timings": "Working hours"}}
+        ],
+        "offices": [
+            {{"name": "Name of offline office", "address": "Full physical address", "department": "Department name"}}
+        ],
+        "alternate_portals": []
+    }}
+    """
+    try:
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o",
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": "You are a helpful civic assistant. Output only valid JSON matching the requested structure."},
+                {"role": "user", "content": prompt}
             ],
-            "offices": [
-                {
-                    "name": "District Collector Office",
-                    "address": f"Contact local district office in {request.city}",
-                    "department": "General Administration"
-                }
-            ]
+            temperature=0.3
+        )
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        print(f"Error fetching local help from OpenAI: {e}")
+        return {
+            "state": request.state,
+            "city": request.city,
+            "contacts": [{"office": "State Helpline", "phone": "Use CPGRAMS", "email": "NA", "timings": "Visit portal"}],
+            "offices": [{"name": "District Collector Office", "address": f"Contact local district office in {request.city}", "department": "General Administration"}],
+            "alternate_portals": []
         }
-    
-    return {
-        "state": request.state,
-        "city": request.city,
-        "contacts": city_data.get("contacts", []),
-        "offices": city_data.get("offices", []),
-        "alternate_portals": []  # Can be populated later
-    }
 
 @api_router.post("/portal/suggest")
 async def suggest_portal(request: PortalSuggestionRequest, user: dict = Depends(get_current_user)):
-    # First, try to find state-specific portal matching the category
-    portal = await db.portals.find_one(
-        {
-            "categories": request.category,
-            "states": request.state
-        },
-        {"_id": 0}
-    )
+    prompt = f"""
+    You are an expert civic assistant for India.
+    The user needs to file a formal complaint online.
     
-    # If no state-specific portal found, try All India portals for that category
-    if not portal:
-        portal = await db.portals.find_one(
-            {
-                "categories": request.category,
-                "states": "All India"
-            },
-            {"_id": 0}
+    Category of issue: {request.category}
+    State: {request.state}
+    City: {request.city}
+    Pincode: {request.pincode or 'Not provided'}
+    
+    Identify the most appropriate official government portal to lodge this specific complaint. 
+    If a specific state or municipal portal exists for this, suggest that. Otherwise, suggest a national portal like CPGRAMS.
+    
+    Output strictly in this JSON format matching the 'Portal' schema:
+    {{
+        "name": "Portal Name (e.g., CPGRAMS, BMC Grievance)",
+        "description": "Short description of the portal",
+        "url": "https://official-portal-url.gov.in",
+        "guidance_steps": [
+            "Step 1: ...",
+            "Step 2: ..."
+        ]
+    }}
+    """
+    try:
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o",
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": "You are a helpful civic assistant. Output only valid JSON matching the requested structure."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3
         )
-    
-    # If still no portal found, return CPGRAMS as default
-    if not portal:
-        portal = await db.portals.find_one(
-            {
-                "name": {"$regex": "CPGRAMS", "$options": "i"}
-            },
-            {"_id": 0}
-        )
-    
-    # Final fallback
-    if not portal:
-        portal = {
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        print(f"Error fetching portal suggestion from OpenAI: {e}")
+        return {
             "name": "CPGRAMS - Centralized Public Grievance Redress System",
             "description": "National portal for lodging grievances to Government departments",
             "url": "https://pgportal.gov.in/",
@@ -673,8 +594,6 @@ async def suggest_portal(request: PortalSuggestionRequest, user: dict = Depends(
                 "Submit and note your registration number"
             ]
         }
-    
-    return portal
 
 @api_router.post("/contact")
 @limiter.limit("3/minute")
