@@ -19,8 +19,7 @@ import jwt
 import bcrypt
 import hashlib
 import secrets
-from openai import LlmChat, UserMessage
-from openai import OpenAISpeechToText
+from openai import AsyncOpenAI
 import io
 
 ROOT_DIR = Path(__file__).parent
@@ -285,9 +284,9 @@ async def transcribe_audio(request: Request, file: UploadFile = File(...), user:
         audio_file = io.BytesIO(audio_data)
         audio_file.name = file.filename
         
-        stt = OpenAISpeechToText(api_key=EMERGENT_LLM_KEY)
-        response = await stt.transcribe(
-            file=audio_file,
+        openai_client = AsyncOpenAI(api_key=EMERGENT_LLM_KEY)
+        response = await openai_client.audio.transcriptions.create(
+            file=(file.filename, audio_file, file.content_type),
             model="whisper-1",
             response_format="json"
         )
@@ -301,14 +300,21 @@ async def transcribe_audio(request: Request, file: UploadFile = File(...), user:
 @limiter.limit("10/minute")
 async def simplify_complaint(request: Request, simplify_request: SimplifyRequest, user: dict = Depends(get_current_user)):
     try:
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=f"simplify-{user['id']}-{uuid.uuid4()}",
-            system_message="You are a complaint processing assistant. Simplify user complaints into clear, concise statements and classify them into categories like: Water Supply, Electricity, Road Maintenance, Waste Management, Public Transport, Healthcare, Education, Police, Revenue, Consumer Rights, or Other. Also generate a formal government-ready complaint with a subject line and detailed description. Return ONLY a valid JSON object with these keys: 'simplified' (brief summary), 'category' (complaint type), 'subject' (formal subject line for government portal), 'description' (formal detailed complaint description ready for submission). Do not use markdown formatting or code blocks."
-        ).with_model("openai", "gpt-4o")
-        
-        user_message = UserMessage(text=f"Simplify this complaint, categorize it, and create a formal government-ready complaint draft with subject and description: {simplify_request.text}")
-        response = await chat.send_message(user_message)
+        openai_client = AsyncOpenAI(api_key=EMERGENT_LLM_KEY)
+        completion = await openai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a complaint processing assistant. Simplify user complaints into clear, concise statements and classify them into categories like: Water Supply, Electricity, Road Maintenance, Waste Management, Public Transport, Healthcare, Education, Police, Revenue, Consumer Rights, or Other. Also generate a formal government-ready complaint with a subject line and detailed description. Return ONLY a valid JSON object with these keys: 'simplified' (brief summary), 'category' (complaint type), 'subject' (formal subject line for government portal), 'description' (formal detailed complaint description ready for submission). Do not use markdown formatting or code blocks."
+                },
+                {
+                    "role": "user",
+                    "content": f"Simplify this complaint, categorize it, and create a formal government-ready complaint draft with subject and description: {simplify_request.text}"
+                }
+            ]
+        )
+        response = completion.choices[0].message.content
         
         import json
         import re
