@@ -8,6 +8,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import os
+import asyncio
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
@@ -177,6 +178,16 @@ def verify_password(password: str, hashed_password: str) -> bool:
             return False
     return False
 
+async def hash_password_async(password: str) -> str:
+    """Run CPU-bound hashing in a thread pool so the event loop stays free."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, hash_password, password)
+
+async def verify_password_async(password: str, hashed_password: str) -> bool:
+    """Run CPU-bound verification in a thread pool so the event loop stays free."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, verify_password, password, hashed_password)
+
 def create_token(user_id: str) -> str:
     payload = {
         'user_id': user_id,
@@ -208,7 +219,8 @@ async def register(request: Request, user_data: UserRegister):
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     
-    password_hash = hash_password(user_data.password)
+    # Offload CPU-heavy hashing to thread pool — keeps event loop responsive
+    password_hash = await hash_password_async(user_data.password)
     user = User(
         name=user_data.name,
         email=user_data.email,
@@ -232,13 +244,14 @@ async def login(request: Request, credentials: UserLogin):
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
-    if not verify_password(credentials.password, user['password_hash']):
+    # Offload CPU-heavy verification to thread pool — keeps event loop responsive
+    if not await verify_password_async(credentials.password, user['password_hash']):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
     # Auto-migrate password hash to high-performance PBKDF2-SHA256 if user logged in using old bcrypt hash
     if user['password_hash'].startswith("$2b$") or user['password_hash'].startswith("$2a$"):
         try:
-            new_hash = hash_password(credentials.password)
+            new_hash = await hash_password_async(credentials.password)
             await db.users.update_one(
                 {"id": user['id']},
                 {"$set": {"password_hash": new_hash}}
@@ -735,6 +748,12 @@ logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 async def seed_portals():
+    # Create indexes for fast auth lookups (idempotent — safe to run every startup)
+    await db.users.create_index("email", unique=True, background=True)
+    await db.users.create_index("id", unique=True, background=True)
+    await db.complaints.create_index("user_id", background=True)
+    logger.info("Database indexes ensured")
+
     existing = await db.portals.find_one({})
     if not existing:
         portals = [
