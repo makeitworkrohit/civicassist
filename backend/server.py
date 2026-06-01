@@ -526,11 +526,10 @@ async def get_local_help(request: LocalHelpRequest, user: dict = Depends(get_cur
     """
     try:
         response = await openai_client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4o",
             response_format={"type": "json_object"},
-            tools=[{"type": "web_search"}],
             messages=[
-                {"role": "system", "content": "You are a helpful civic assistant. Search the web to find the EXACT real numbers and addresses. Output only valid JSON matching the requested structure."},
+                {"role": "system", "content": "You are a helpful civic assistant. Use your extensive training data to find the EXACT real numbers and addresses. Output only valid JSON matching the requested structure."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3
@@ -576,11 +575,10 @@ async def suggest_portal(request: PortalSuggestionRequest, user: dict = Depends(
     """
     try:
         response = await openai_client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4o",
             response_format={"type": "json_object"},
-            tools=[{"type": "web_search"}],
             messages=[
-                {"role": "system", "content": "You are a helpful civic assistant. Search the web to find the EXACT real state portals. Output only valid JSON matching the requested structure."},
+                {"role": "system", "content": "You are a helpful civic assistant. Use your extensive training data to find the EXACT real state portals. Output only valid JSON matching the requested structure."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3
